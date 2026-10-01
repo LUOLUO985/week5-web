@@ -12,14 +12,40 @@ async function initMap() {
         attribution: "© OpenStreetMap"
     }).addTo(map);
 
-    await loadGeoJson(map);
+    // Both data sources are outside our control, so a bad answer from one of
+    // them must never stop the page. We report it and keep the map visible.
+    try {
+        await loadGeoJson(map);
+    } catch (error) {
+        console.error("Could not draw the municipalities:", error);
+    }
+}
+
+
+// fetch + parse that returns null instead of throwing when the answer is
+// empty, cut short or not JSON at all.
+async function loadJson(url, options) {
+    const response = await fetch(url, options);
+    const text = await response.text();
+
+    try {
+        return JSON.parse(text);
+    } catch (error) {
+        console.error("Not valid JSON from " + url + ":", text.slice(0, 200));
+        return null;
+    }
 }
 
 
 async function loadGeoJson(map) {
-    const geoResponse = await fetch(geoJsonUrl);
-    const geoJson = await geoResponse.json();
+    const geoJson = await loadJson(geoJsonUrl);
     const migration = await loadMigration();
+
+    if (!geoJson || !geoJson.features) {
+        console.error("No GeoJSON features to draw.");
+        map.setView([64, 26], 5);   // fallback view, so the base map is still visible
+        return;
+    }
 
     const layer = L.geoJSON(geoJson, {
         style: feature => getStyle(feature, migration),
@@ -31,15 +57,19 @@ async function loadGeoJson(map) {
 
 
 async function loadMigration() {
-    const queryResponse = await fetch("migration_data_query.json");
-    const query = await queryResponse.json();
+    const query = await loadJson("migration_data_query.json");
+    if (!query) {
+        return new Map();
+    }
 
-    const dataResponse = await fetch(migrationUrl, {
+    const dataset = await loadJson(migrationUrl, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(query)
     });
-    const dataset = await dataResponse.json();
+    if (!dataset) {
+        return new Map();
+    }
 
     return toMigrationTable(dataset);
 }
@@ -49,23 +79,35 @@ async function loadMigration() {
 function toMigrationTable(dataset) {
     // The area variable is named after the region division (alue_23_20260101
     // today, something else later), so find it by name instead of hard-coding.
-    const areaDimension = Object.keys(dataset.dimension)
-        .find(name => name.startsWith("alue"));
-    const index = dataset.dimension[areaDimension].category.index;
+    const dimension = dataset.dimension || {};
+    const areaDimension = Object.keys(dimension).find(name => name.startsWith("alue"));
 
+    if (!areaDimension) {
+        console.error("No area dimension in the migration data.");
+        return new Map();
+    }
+
+    const index = dimension[areaDimension].category.index;
+    const values = dataset.value || [];
     const table = new Map();
 
     for (const code in index) {
+        // Every municipality has two slots: first incoming (positive),
+        // then outgoing (negative).
         const position = index[code] * 2;
 
         // "KU020" -> "020", the same shape as the kunta code in the GeoJSON.
         table.set(code.replace("KU", ""), {
-            positive: dataset.value[position],
-            negative: dataset.value[position + 1]
+            positive: values[position],
+            negative: values[position + 1]
         });
     }
 
     return table;
+}
+
+
+// Migration numbers of one municipality, or undefined when there are none.
 function getMigrationOf(feature, migration) {
     // kunta is normally "020", but pad it in case it arrives as a number.
     const code = String(feature.properties.kunta).padStart(3, "0");
@@ -74,7 +116,8 @@ function getMigrationOf(feature, migration) {
 
 
 function getColor(data) {
-    if (!data) {
+    // Some areas have no migration row. Paint them grey instead of crashing.
+    if (!data || data.positive === undefined || !data.negative) {
         return "#cccccc";
     }
 
