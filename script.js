@@ -12,8 +12,6 @@ async function initMap() {
         attribution: "© OpenStreetMap"
     }).addTo(map);
 
-    // Both data sources are outside our control, so a bad answer from one of
-    // them must never stop the page. We report it and keep the map visible.
     try {
         await loadGeoJson(map);
     } catch (error) {
@@ -22,8 +20,6 @@ async function initMap() {
 }
 
 
-// fetch + parse that returns null instead of throwing when the answer is
-// empty, cut short or not JSON at all.
 async function loadJson(url, options) {
     const response = await fetch(url, options);
     const text = await response.text();
@@ -43,7 +39,7 @@ async function loadGeoJson(map) {
 
     if (!geoJson || !geoJson.features) {
         console.error("No GeoJSON features to draw.");
-        map.setView([64, 26], 5);   // fallback view, so the base map is still visible
+        map.setView([64, 26], 5);
         return;
     }
 
@@ -75,10 +71,7 @@ async function loadMigration() {
 }
 
 
-// Builds a lookup table like "020" -> { positive: 823, negative: 750 }.
 function toMigrationTable(dataset) {
-    // The area variable is named after the region division (alue_23_20260101
-    // today, something else later), so find it by name instead of hard-coding.
     const dimension = dataset.dimension || {};
     const areaDimension = Object.keys(dimension).find(name => name.startsWith("alue"));
 
@@ -92,11 +85,8 @@ function toMigrationTable(dataset) {
     const table = new Map();
 
     for (const code in index) {
-        // Every municipality has two slots: first incoming (positive),
-        // then outgoing (negative).
         const position = index[code] * 2;
 
-        // "KU020" -> "020", the same shape as the kunta code in the GeoJSON.
         table.set(code.replace("KU", ""), {
             positive: values[position],
             negative: values[position + 1]
@@ -107,16 +97,13 @@ function toMigrationTable(dataset) {
 }
 
 
-// Migration numbers of one municipality, or undefined when there are none.
 function getMigrationOf(feature, migration) {
-    // kunta is normally "020", but pad it in case it arrives as a number.
     const code = String(feature.properties.kunta).padStart(3, "0");
     return migration.get(code);
 }
 
 
 function getColor(data) {
-    // Some areas have no migration row. Paint them grey instead of crashing.
     if (!data || data.positive === undefined || !data.negative) {
         return "#cccccc";
     }
